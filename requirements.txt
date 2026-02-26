@@ -1,0 +1,8 @@
+# Project dependencies
+# Created: 2026-02-26
+
+# For Polar sensor tests
+bleak>=2.1.1
+
+# For other dependencies that might be needed
+# Add other dependencies here as they are discovered
