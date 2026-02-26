@@ -4,6 +4,7 @@ import math
 import moderngl_window as mglw
 import imgui
 from moderngl_window.integrations.imgui import ModernglWindowRenderer
+from engine.sdf_maker import create_text_sdf # NEW
 
 class FractalRenderer(mglw.WindowConfig):
     gl_version = (3, 3)
@@ -20,7 +21,13 @@ class FractalRenderer(mglw.WindowConfig):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.quad = mglw.geometry.quad_fs()
+        
+        # Shader will now compile without Segfaulting
         self.program = self.load_program(path='shaders/fractal.glsl')
+        
+        # Create a tiny 1x1 blank texture so the GPU has something to read initially
+        self.sdf_tex = self.ctx.texture((1, 1), 1, b'\x00')
+        self.sdf_tex.use(location=0)
         
         # Initialize the floating GUI
         imgui.create_context()
@@ -29,6 +36,25 @@ class FractalRenderer(mglw.WindowConfig):
     def on_render(self, current_time, frame_time):
         self.ctx.clear(0.0, 0.0, 0.0)
         elapsed = time.time() - self.state.time_started
+
+        # --- Handle New Text Injections ---
+        if self.state.injection_needs_update:
+            # Generate the math texture
+            data, w, h = create_text_sdf(self.state.inject_text)
+            self.sdf_tex = self.ctx.texture((w, h), 1, data)
+            self.state.injection_needs_update = False
+            self.state.inject_active = True
+
+        # Send textures and math to the GPU
+        if self.state.inject_active and hasattr(self, 'sdf_tex'):
+            self.sdf_tex.use(location=0)
+            self.program['sdf_texture'].value = 0
+            self.program['inject_active'].value = 1 # CHANGED TO 1
+            self.program['inject_pos'].value = (self.state.inject_x, self.state.inject_y)
+            self.program['inject_scale'].value = self.state.inject_scale
+        else:
+            self.program['inject_active'].value = 0 # CHANGED TO 0
+
 
         # 1. Calculate the aspect ratio scale for UV mapping
         aspect_x = self.window_size[0] / min(self.window_size)
@@ -70,7 +96,7 @@ class FractalRenderer(mglw.WindowConfig):
         imgui.new_frame()
         imgui.begin("LLM Control Panel", True)
         
-        # --- NEW: Eye Tracker Toggle ---
+        # --- Eye Tracker Toggle ---
         _, self.state.use_eye_tracker = imgui.checkbox("Eye Tracker Zoom", self.state.use_eye_tracker)
         imgui.spacing()
         
@@ -89,7 +115,22 @@ class FractalRenderer(mglw.WindowConfig):
         imgui.text("--- Biometrics Data ---")
         imgui.text(f"Heart Rate: {self.state.current_hr} BPM")
         imgui.text(f"Gaze Point: ({self.state.gaze_x:.2f}, {self.state.gaze_y:.2f})")
+
+        # --- Injection Engine UI ---
+        imgui.spacing()
+        imgui.text("--- Text Injection ---")
+        _, self.state.inject_text = imgui.input_text("Word", self.state.inject_text, 256)
         
+        if imgui.button("Inject Here"):
+            # Lock the coordinates and scale to EXACTLY where the user is looking right now
+            self.state.inject_x = self.state.offset_x
+            self.state.inject_y = self.state.offset_y
+            self.state.inject_scale = self.state.zoom
+            self.state.injection_needs_update = True
+            
+        if imgui.button("Clear Text"):
+            self.state.inject_active = False
+
         imgui.end()
         imgui.render()
         self.imgui.render(imgui.get_draw_data())

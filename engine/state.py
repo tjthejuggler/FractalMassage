@@ -26,3 +26,11 @@ class FractalState:
         self.gaze_y = 0.5 
         self.current_hr = 0
         self.rr_intervals = []
+
+        # --- Injection Engine ---
+        self.inject_text = "BREATHE"
+        self.inject_active = False
+        self.injection_needs_update = False
+        self.inject_x = 0.0
+        self.inject_y = 0.0
+        self.inject_scale = 1.0

@@ -1,56 +1,59 @@
 import threading
-from tobii_stream_engine import Api, Device, GazePoint, Stream
+from tobii_stream_engine import Api, Device, Stream
 
-def _run_tobii_loop(state):
-    def on_gaze_point(timestamp: int, gaze_point: GazePoint) -> None:
-        try:
-            # The CFFI wrapper nests the coordinates inside 'position_xy'
-            if hasattr(gaze_point, 'position_xy'):
-                # Check if it's an object with .x/.y, or a tuple with [0]/[1]
-                if hasattr(gaze_point.position_xy, 'x'):
-                    raw_x = gaze_point.position_xy.x
-                    raw_y = gaze_point.position_xy.y
-                else:
-                    raw_x = gaze_point.position_xy[0]
-                    raw_y = gaze_point.position_xy[1]
-            else:
-                raw_x = gaze_point.x
-                raw_y = gaze_point.y
-                
-            # Apply our Exponential Moving Average to smooth out micro-jitters
-            smoothing = 0.15
-            state.gaze_x = (1.0 - smoothing) * state.gaze_x + (smoothing * raw_x)
-            state.gaze_y = (1.0 - smoothing) * state.gaze_y + (smoothing * raw_y)
-            
-        except Exception as e:
-            # If it fails, print the actual object layout so we can debug it instantly
-            print(f"Tobii Data Error: {e}")
-            print(f"GazePoint structure: {dir(gaze_point)}")
+# Global references prevent Python's garbage collector from destroying the connection
+_api = None
+_device = None
 
+def setup_and_start_tobii(state):
+    global _api, _device
     try:
-        api = Api()
-        device_urls = api.enumerate_local_device_urls()
+        print("Tobii: Initializing connection...")
+        _api = Api()
+        urls = _api.enumerate_local_device_urls()
         
-        if not device_urls:
-            print("Tobii: No device found. Eye tracking disabled.")
-            return
+        if not urls:
+            print("Tobii: No devices found. Running without eye tracking.")
+            return False
             
-        device = Device(api=api, url=device_urls[0])
+        url = urls[0]
+        print(f"Tobii found at: {url}")
         
-        # Verify the device supports the gaze stream before subscribing
-        if not device.is_supported_stream(Stream.GAZE_POINT):
-            print("Tobii: Gaze point stream not supported on this specific device.")
-            return
+        # Initialize the device synchronously on the main thread!
+        _device = Device(api=_api, url=url)
+        
+        def on_gaze_point(timestamp, gaze_point):
+            try:
+                if hasattr(gaze_point, 'position_xy'):
+                    if hasattr(gaze_point.position_xy, 'x'):
+                        raw_x = gaze_point.position_xy.x
+                        raw_y = gaze_point.position_xy.y
+                    else:
+                        raw_x = gaze_point.position_xy[0]
+                        raw_y = gaze_point.position_xy[1]
+                else:
+                    raw_x = gaze_point.x
+                    raw_y = gaze_point.y
+                    
+                smoothing = 0.15
+                state.gaze_x = (1.0 - smoothing) * state.gaze_x + (smoothing * raw_x)
+                state.gaze_y = (1.0 - smoothing) * state.gaze_y + (smoothing * raw_y)
+            except Exception:
+                pass # Suppress spam if tracking drops
+
+        if _device.is_supported_stream(Stream.GAZE_POINT):
+            # Subscribe synchronously
+            _device.subscribe_gaze_point(callback=on_gaze_point)
             
-        device.subscribe_gaze_point(callback=on_gaze_point)
-        print(f"Tobii Eye Tracker Connected: {device_urls[0]}")
-        
-        # This blocks the background thread, keeping the connection alive
-        device.run() 
+            # ONLY put the blocking listener loop in the background thread
+            t = threading.Thread(target=_device.run, daemon=True)
+            t.start()
+            print("Tobii: Streaming started in background thread.")
+            return True
+        else:
+            print("Tobii: Gaze stream not supported.")
+            return False
+            
     except Exception as e:
         print(f"Tobii Initialization Error: {e}")
-
-def start_tobii_thread(state):
-    """Launches the Tobii tracker in a background thread so the GPU doesn't freeze."""
-    t = threading.Thread(target=_run_tobii_loop, args=(state,), daemon=True)
-    t.start()
+        return False
